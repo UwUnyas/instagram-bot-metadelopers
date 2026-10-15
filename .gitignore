@@ -1,0 +1,9 @@
+.env
+config.py
+*токен.txt
+*.db
+*.db-shm
+*.db-wal
+__pycache__/
+.venv/
+venv/
