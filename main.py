@@ -20,6 +20,7 @@ META_ACCESS_TOKEN = os.getenv("META_ACCESS_TOKEN", "").strip()
 META_VERIFY_TOKEN = os.getenv("META_VERIFY_TOKEN", "").strip()
 IG_ACCOUNT_ID = os.getenv("IG_ACCOUNT_ID", "").strip()
 GRAPH_API_VERSION = os.getenv("GRAPH_API_VERSION", "v26.0").strip()
+TELEGRAM_BOT_URL = os.getenv("TELEGRAM_BOT_URL", "").strip()
 DB_FILE = BASE_DIR / "chat_history_suytsai.db"
 
 missing = [
@@ -412,20 +413,77 @@ def respond_postback(user_id: str, payload: str) -> tuple[str, list[dict] | None
     return "Выбери тему кнопкой или напиши вопрос своими словами.", MAIN_MENU
 
 
-def send_instagram_message(recipient_id: str, text: str, buttons: list[dict] | None = None) -> bool:
+def send_button_template(
+    recipient_id: str,
+    text: str,
+    buttons: list[dict],
+    headers: dict[str, str],
+    error_context: str,
+) -> bool:
+    message = {
+        "attachment": {
+            "type": "template",
+            "payload": {
+                "template_type": "button",
+                "text": text,
+                "buttons": buttons[:3],
+            },
+        }
+    }
+    try:
+        response = requests.post(
+            META_SEND_URL,
+            json={"recipient": {"id": recipient_id}, "message": message},
+            headers=headers,
+            timeout=20,
+        )
+    except requests.RequestException:
+        logging.exception("%s", error_context)
+        return False
+    if not response.ok:
+        logging.error(
+            "%s: HTTP %s — %s",
+            error_context,
+            response.status_code,
+            response.text,
+        )
+    return response.ok
+
+
+def send_instagram_message(
+    recipient_id: str, text: str, buttons: list[dict] | None = None
+) -> bool:
     headers = {
         "Authorization": f"Bearer {META_ACCESS_TOKEN}",
         "Content-Type": "application/json",
     }
-    if buttons and len(text) <= 640:
+
+    message_buttons = list(buttons or [])
+    telegram_button_added = False
+    if TELEGRAM_BOT_URL:
+        telegram_button = {
+            "type": "web_url",
+            "url": TELEGRAM_BOT_URL,
+            "title": "Открыть Telegram",
+        }
+        if len(message_buttons) < 3:
+            message_buttons.append(telegram_button)
+            telegram_button_added = True
+
+    if message_buttons and len(text) <= 640:
         message = {
             "attachment": {
                 "type": "template",
-                "payload": {"template_type": "button", "text": text, "buttons": buttons[:3]},
+                "payload": {
+                    "template_type": "button",
+                    "text": text,
+                    "buttons": message_buttons[:3],
+                },
             }
         }
     else:
         message = {"text": text}
+
     try:
         response = requests.post(
             META_SEND_URL,
@@ -436,36 +494,54 @@ def send_instagram_message(recipient_id: str, text: str, buttons: list[dict] | N
     except requests.RequestException:
         logging.exception("Сетевая ошибка при отправке в Meta")
         return False
-    if response.ok:
-        if buttons and len(text) > 640:
-            # Длинный разбор отправляем текстом целиком, а кнопки — следующим коротким сообщением.
-            button_message = {
-                "attachment": {
-                    "type": "template",
-                    "payload": {
-                        "template_type": "button",
-                        "text": "Что разберём дальше?",
-                        "buttons": buttons[:3],
-                    },
-                }
-            }
-            try:
-                button_response = requests.post(
-                    META_SEND_URL,
-                    json={"recipient": {"id": recipient_id}, "message": button_message},
-                    headers=headers,
-                    timeout=20,
-                )
-            except requests.RequestException:
-                logging.exception("Не удалось отправить кнопки после длинного разбора")
-                return True
-            if not button_response.ok:
-                logging.error("Meta отклонила отправку кнопок: HTTP %s — %s", button_response.status_code, button_response.text)
-        logging.info("Ответ отправлен пользователю %s", recipient_id)
-        return True
-    logging.error("Meta отклонила отправку: HTTP %s — %s", response.status_code, response.text)
-    return False
 
+    if not response.ok:
+        logging.error(
+            "Meta отклонила отправку: HTTP %s — %s",
+            response.status_code,
+            response.text,
+        )
+        return False
+
+    telegram_button_sent = telegram_button_added and len(text) <= 640
+
+    if buttons and len(text) > 640:
+        # Длинный ответ отправляем целиком, а кнопки — отдельным коротким сообщением.
+        followup_buttons = list(buttons[:3])
+        if TELEGRAM_BOT_URL and len(followup_buttons) < 3:
+            followup_buttons.append(
+                {
+                    "type": "web_url",
+                    "url": TELEGRAM_BOT_URL,
+                    "title": "Открыть Telegram",
+                }
+            )
+            telegram_button_sent = True
+        send_button_template(
+            recipient_id,
+            "Что разберём дальше?",
+            followup_buttons,
+            headers,
+            "Не удалось отправить кнопки после длинного ответа",
+        )
+
+    if TELEGRAM_BOT_URL and not telegram_button_sent:
+        send_button_template(
+            recipient_id,
+            "Проверка подписки доступна в Telegram:",
+            [
+                {
+                    "type": "web_url",
+                    "url": TELEGRAM_BOT_URL,
+                    "title": "Открыть Telegram",
+                }
+            ],
+            headers,
+            "Не удалось отправить ссылку на Telegram-бота",
+        )
+
+    logging.info("Ответ отправлен пользователю %s", recipient_id)
+    return True
 
 init_db()
 
