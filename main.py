@@ -24,7 +24,7 @@ META_APP_SECRET = os.getenv("META_APP_SECRET", "").strip()
 IG_ACCOUNT_ID = os.getenv("IG_ACCOUNT_ID", "").strip()
 GRAPH_API_VERSION = os.getenv("GRAPH_API_VERSION", "v26.0").strip()
 TELEGRAM_BOT_URL = os.getenv("TELEGRAM_BOT_URL", "").strip()
-DB_FILE = BASE_DIR / "chat_history_suytsai.db"
+DB_FILE = Path(os.getenv("DB_FILE", str(BASE_DIR / "chat_history_suytsai.db"))).expanduser()
 
 missing = [
     key
