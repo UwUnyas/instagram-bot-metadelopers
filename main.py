@@ -1,3 +1,5 @@
+import hashlib
+import hmac
 import logging
 import os
 import re
@@ -18,6 +20,7 @@ app = Flask(__name__)
 
 META_ACCESS_TOKEN = os.getenv("META_ACCESS_TOKEN", "").strip()
 META_VERIFY_TOKEN = os.getenv("META_VERIFY_TOKEN", "").strip()
+META_APP_SECRET = os.getenv("META_APP_SECRET", "").strip()
 IG_ACCOUNT_ID = os.getenv("IG_ACCOUNT_ID", "").strip()
 GRAPH_API_VERSION = os.getenv("GRAPH_API_VERSION", "v26.0").strip()
 TELEGRAM_BOT_URL = os.getenv("TELEGRAM_BOT_URL", "").strip()
@@ -219,9 +222,17 @@ def parse_birth_date(text: str) -> tuple[int, int | None] | None:
     if not (1 <= day <= 31 and 1 <= month <= 12):
         return None
     if not year_text:
+        from datetime import date
+        try:
+            date(2000, month, day)
+        except ValueError:
+            return None
         return day, None
     year = int(year_text)
-    if not 1 <= year <= 9999:
+    from datetime import date
+    try:
+        date(year, month, day)
+    except ValueError:
         return None
 
     # В философии Сюцай Число Сознания считают по цифрам дня,
@@ -557,8 +568,24 @@ def verify_webhook():
     return "Forbidden", 403
 
 
+def is_valid_meta_signature(raw_body: bytes, signature_header: str, app_secret: str) -> bool:
+    """Validate Meta's X-Hub-Signature-256 HMAC for the exact request body."""
+    if not app_secret or not signature_header.startswith("sha256="):
+        return False
+    expected = "sha256=" + hmac.new(app_secret.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, signature_header)
+
+
 @app.route("/webhook", methods=["POST"])
 def handle_webhook():
+    if META_APP_SECRET:
+        signature = request.headers.get("X-Hub-Signature-256", "")
+        if not is_valid_meta_signature(request.get_data(cache=True), signature, META_APP_SECRET):
+            logging.warning("Webhook отклонён: неверная подпись Meta")
+            return "Forbidden", 403
+    else:
+        logging.warning("META_APP_SECRET не задан: подпись входящего webhook не проверяется")
+
     data = request.get_json(silent=True) or {}
     if data.get("object") != "instagram":
         logging.warning("Webhook пришёл с неожиданным object=%s", data.get("object"))
